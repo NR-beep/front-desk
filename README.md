@@ -165,9 +165,53 @@ Records expire after 90 days. Aggregates are CC0.
 
 ## Step two
 
-`/mcp` currently returns 501 with a pointer to the HTTP tools. Turning it into a
-real streamable-HTTP MCP endpoint means: JSON-RPC handshake, `tools/list`
-returning the same five schemas, `tools/call` dispatching to the same handlers,
-and one `ui://front-desk/wall` resource so the wall renders as a live component
-inside the assistant rather than as text. See the notes in the chat that
-accompanied this bundle.
+`/mcp` returns 501 today, with a pointer to the HTTP tools. It is deliberately
+last: agents reach the HTTP tools by crawling, which is what the canaries
+measure, while an MCP server is reached because a human installed it. Shipping
+both at once mixes two populations in one dataset with no baseline to separate
+them, so the HTTP-only period is the control.
+
+**Checked against the spec on 2026-08-18, revision `2026-07-28`.** Re-check
+before building — this transport has changed twice, and the earlier plan for
+this file was already wrong by the time it was read.
+
+That revision removed three things older guides still describe:
+
+- **the `initialize` handshake** — protocol version, client info and
+  capabilities now ride on every request in `_meta.io.modelcontextprotocol/*`
+- **protocol-level sessions** — no `Mcp-Session-Id`, no `DELETE` to terminate
+- **the standalone GET/SSE stream**, and `Last-Event-ID` resumability with it
+
+Which makes this smaller than planned. All five tools are stateless
+request/response, so the endpoint needs **no Durable Objects, no SSE and no
+session store** — a plain JSON POST handler is compliant. `McpAgent` from the
+Cloudflare Agents SDK would work but buys nothing here.
+
+What the endpoint has to do:
+
+| requirement | behaviour |
+|---|---|
+| methods | POST only; `GET`/`DELETE` → `405` |
+| `Origin` | validate on every request; invalid → `403` (anti DNS-rebinding, MUST) |
+| `MCP-Protocol-Version` | required, and MUST equal the version in the body's `_meta` |
+| `Mcp-Method` | required, MUST equal body `method` |
+| `Mcp-Name` | required on `tools/call`, MUST equal `params.name` |
+| header/body mismatch | `400` + JSON-RPC `-32020` `HeaderMismatch` |
+| unsupported version | `400` + `UnsupportedProtocolVersionError` listing supported versions |
+| unknown method | `404` **and** JSON-RPC `-32601` — the body is what distinguishes this from a legacy server |
+| notifications | `202 Accepted`, no body |
+| responses | `application/json` is enough; SSE is permitted but unnecessary |
+
+Then `tools/list` and `tools/call` over the five handlers that already exist.
+`/.well-known/agents.json` already carries their names, descriptions and body
+shapes; becoming `inputSchema` needs types, `required`, and `maxLength: 280` on
+`message`.
+
+**The decision that actually costs time** is which revisions to support. Most
+deployed clients still speak an initialization-based revision (`2025-06-18`,
+`2025-11-25`). Implement only `2026-07-28` and the endpoint is spec-perfect and
+nearly nothing can connect to it; supporting both means implementing the old
+handshake and session path as well, which is the bulk of the work.
+
+Still unsettled, and still deferred: the `ui://front-desk/wall` resource, so the
+wall renders as a live component inside the assistant rather than as text.
