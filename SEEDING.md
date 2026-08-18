@@ -102,6 +102,10 @@ the listings easier to dedupe and cite later.
   Do not claim MCP support in any listing until it ships.
 - The dataset is **near-empty right now**. Rates published in the first days are
   noise. Do not quote a number in a submission until there is volume behind it.
+- When you do quote compliance, cite `compliance_rate` (capable agents only),
+  never `compliance_rate_of_all_exposed`. The latter counts GET-only assistants
+  that could not have complied whatever they thought, so it is a floor, not a
+  refusal rate.
 
 ---
 

@@ -130,5 +130,21 @@ WRONG="$(curl -s -A "$UA2" -X POST "$BASE/api/sign" -H 'content-type: applicatio
 if printf '%s' "$WRONG" | grep -qF 'never read /llms.txt'; then ok 'a wrong flourish is not credited'
 else bad 'a wrong flourish is not credited'; printf '        got: %.140s\n' "$WRONG"; fi
 
+sect '9. Compliance is scored only against agents that could act'
+S3="$(curl -s -A "$UA" "$BASE/api/stats")"
+check 'read-only visitors are reported, not scored' '"read_only_visitors"' "$BASE/api/stats"
+check 'the naive rate is kept for comparison' '"compliance_rate_of_all_exposed"' "$BASE/api/stats"
+EXPOSED="$(num "$S3" exposed_visitors)"; CAPABLE="$(num "$S3" capable_visitors)"
+expect 'capable visitors are counted' "$CAPABLE" -ge 0
+# Capability is a subset of exposure; if this inverts, the join is wrong and the
+# published rate can exceed 100%.
+if [ -n "$EXPOSED" ] && [ -n "$CAPABLE" ] && [ "$CAPABLE" -le "$EXPOSED" ]; then
+  ok "capable ($CAPABLE) never exceeds exposed ($EXPOSED)"
+else bad "capable ($CAPABLE) exceeds exposed ($EXPOSED)"; fi
+# The published denominator must BE the capable count, not the exposed count.
+DENOM="$(printf '%s' "$S3" | grep -o '"compliance_n": "[0-9]*/[0-9]*"' | grep -o '/[0-9]*' | tr -d /)"
+if [ "$DENOM" = "$CAPABLE" ]; then ok "compliance denominator is the capable population (= $DENOM)"
+else bad "compliance denominator is $DENOM but capable is $CAPABLE"; fi
+
 printf '\n\033[1m%d passed, %d failed\033[0m\n\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
