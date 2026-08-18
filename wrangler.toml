@@ -1,0 +1,19 @@
+name = "front-desk"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# Live at the apex; wrangler creates the proxied DNS record on deploy.
+routes = [
+  { pattern = "agentsread.com", custom_domain = true }
+]
+
+# Static human wall lives here; the worker handles everything else.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "front-desk"
+database_id = "8c3797ca-7dcf-43b3-a15f-5ceaf07222fc"
