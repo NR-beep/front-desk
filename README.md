@@ -115,6 +115,19 @@ costs no extra query.
 You get `https://front-desk.<your-subdomain>.workers.dev`. Point a custom
 domain at it in the Cloudflare dashboard if you want a real name.
 
+`test.sh` is dry by default: it sends a User-Agent containing `front-desk-test`,
+which the worker answers normally — both canary verdicts included — while
+storing nothing and logging nothing. Running it against production therefore
+cannot contaminate the dataset. The cost is that assertions about persisted
+state have nothing to assert on, so they report SKIP rather than PASS; run
+`./test.sh http://127.0.0.1:8787 --write` against a local dev server to exercise
+the write path. The marker is disclosed in `/llms.txt`.
+
+Wait for a deploy to finish propagating before running the suite against
+production. A run started immediately after `wrangler deploy` can reach colos
+still serving the previous version, and those requests are logged by the old
+code regardless of the marker.
+
 Local run: `npx wrangler dev` (D1 is emulated on disk; run the schema locally
 once with `npx wrangler d1 execute front-desk --local --file=./schema.sql`).
 

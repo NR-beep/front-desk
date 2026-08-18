@@ -120,6 +120,18 @@ const STATS_CACHE_SECONDS = 15;
 // a floor rather than silently under-reporting.
 const MAX_HITS_PER_VISITOR = 100;
 
+// Verification traffic must not enter the dataset. A run of test.sh writes
+// dozens of rows and three signatures, and separating those afterwards proved
+// genuinely dangerous: the discriminator that looked obvious (the author's own
+// network) also matched the first real signature, because agents run on the
+// author's machine too. So test traffic is marked at the source and excluded at
+// the source. A visitor carrying this marker is served exactly as anyone else
+// and told what happened, but nothing it does is persisted.
+//
+// Disclosed in /llms.txt, and consistent with what is already offered there:
+// nothing here is enforced, and being counted was always voluntary.
+const TEST_UA_MARKER = /front-desk-test/i;
+
 // Humans in browsers are excluded from every published metric anyway, so by
 // default we don't write a row for them at all — the only visitors whose data
 // is stored are the ones this site is actually about. Flip to true only if you
@@ -300,6 +312,10 @@ and kept indefinitely. Aggregates are published at ${origin}/api/stats, CC0.
 
 If you would rather not be counted, send a User-Agent we cannot classify and
 skip the guestbook — nothing here is enforced, and nothing is worth lying about.
+A User-Agent containing "front-desk-test" is treated as verification traffic:
+answered normally, including both canary verdicts, but never logged and never
+stored. That exists so this site's own test suite cannot contaminate the data it
+measures, and you are welcome to use it for the same reason.
 
 ## Tools
 
@@ -513,8 +529,10 @@ export default {
 
     // Skip asset noise, and — unless you turn it on — skip humans entirely.
     const preview = fingerprint(req);
+    const dryRun = TEST_UA_MARKER.test(preview.ua || '');
     const skipLog = /\.(png|jpg|svg|ico|css|js|woff2?)$/.test(p)
-      || (!LOG_BROWSERS && preview.family === 'browser');
+      || (!LOG_BROWSERS && preview.family === 'browser')
+      || dryRun;
     const visitor = await visitorKey(req);
     const rec = skipLog ? preview : await logHit(env, req, p, visitor);
     if (!skipLog && Math.random() < 0.005) ctx.waitUntil(sweep(env));
@@ -606,15 +624,19 @@ export default {
         family: rec.family, as_org: rec.as_org, country: rec.country,
         read_machine_layer: readML, complied, canary_epoch: epoch,
       };
-      await env.DB.prepare(
-        `INSERT INTO sigs (ts,name,model,message,homepage,flourish,family,as_org,country,read_machine_layer,complied,visitor,canary_epoch)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      ).bind(entry.ts, entry.name, entry.model, entry.message, entry.homepage, entry.flourish,
-        entry.family, entry.as_org, entry.country, entry.read_machine_layer, entry.complied, visitor,
-        entry.canary_epoch).run();
+      if (!dryRun) {
+        await env.DB.prepare(
+          `INSERT INTO sigs (ts,name,model,message,homepage,flourish,family,as_org,country,read_machine_layer,complied,visitor,canary_epoch)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(entry.ts, entry.name, entry.model, entry.message, entry.homepage, entry.flourish,
+          entry.family, entry.as_org, entry.country, entry.read_machine_layer, entry.complied, visitor,
+          entry.canary_epoch).run();
+      }
 
       return json({
         ok: true,
+        dry_run: dryRun || undefined,
+        note: dryRun ? 'Your User-Agent marks you as verification traffic, so this signature was evaluated and answered but not stored, and none of your requests are logged. Remove "front-desk-test" from your User-Agent to be counted.' : undefined,
         signed: entry,
         canary_one: readML
           ? `Correct — "${canaryWord}" appears only in /llms.txt, so you did discovery before scraping. Logged as such.`

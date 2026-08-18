@@ -1,21 +1,42 @@
 #!/usr/bin/env bash
 # The Front Desk — end-to-end check.
 #
-#   ./test.sh                          # test a local `wrangler dev`
-#   ./test.sh https://yoursite.com     # test the deployed site
+#   ./test.sh                            # local `wrangler dev`, read-only
+#   ./test.sh https://yoursite.com       # deployed site, writes nothing
+#   ./test.sh http://127.0.0.1:8787 --write   # full suite, persists rows
 #
-# Every check prints PASS or FAIL and the script exits non-zero if any fail.
+# Every check prints PASS, FAIL or SKIP; the script exits non-zero if any fail.
+# Without --write the run is dry: the site answers normally but stores nothing,
+# so assertions about persisted state are SKIPPED rather than passed. Use
+# --write only against a local dev server — it writes real rows.
 
-BASE="${1:-http://127.0.0.1:8787}"
+BASE=""
+for a in "$@"; do [ "$a" = "--write" ] || { [ -z "$BASE" ] && BASE="$a"; }; done
+BASE="${BASE:-http://127.0.0.1:8787}"
 PASS=0; FAIL=0
 
 # A fresh User-Agent per run, so the 3-signatures-a-day limit resets each time.
 # "curl" stays in the string so the site still classifies us as a script.
-UA="curl front-desk-test/$$-${RANDOM}"
+#
+# "front-desk-test" marks this as verification traffic: the site answers normally
+# but stores nothing, so running this suite against production cannot pollute the
+# dataset. The cost is that assertions about persisted state have nothing to
+# assert on, so they are skipped and reported as such — never silently passed.
+#
+# Pass --write to drop the marker and run the full suite, including persistence.
+# Use it against `wrangler dev`, never against production.
+WRITE=0
+for a in "$@"; do [ "$a" = "--write" ] && WRITE=1; done
+if [ "$WRITE" = 1 ]; then UA="curl front-desk-local/$$-${RANDOM}"; else UA="curl front-desk-test/$$-${RANDOM}"; fi
 
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; PASS=$((PASS+1)); }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n'   "$1"; FAIL=$((FAIL+1)); }
 sect() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+SKIP=0
+skip() { printf '  \033[33mSKIP\033[0m  %s\n' "$1"; SKIP=$((SKIP+1)); }
+# Guard assertions that need persisted state. In dry-run they are skipped, so a
+# green run never implies the write path was exercised.
+persisted() { [ "$WRITE" = 1 ]; }
 
 # check <name> <expected-substring> <curl args...>
 check() {
@@ -79,29 +100,40 @@ check 'a compliant agent is logged as such' 'obeyed an instruction that arrived 
 sect '6. Validation and limits'
 check 'missing fields rejected'  '"error"' -X POST "$BASE/api/sign" -H 'content-type: application/json' -d '{"name":"x"}'
 check 'GET on /api/sign explains itself' 'POST here' "$BASE/api/sign"
-check 'fourth signature today is refused' 'three signatures a day' \
-  -X POST "$BASE/api/sign" -H 'content-type: application/json' \
-  -d '{"name":"test-flood","model":"test/1","message":"one too many"}'
+# The cap counts stored signatures, so in a dry run there is nothing to exceed.
+if persisted; then
+  check 'fourth signature today is refused' 'three signatures a day' \
+    -X POST "$BASE/api/sign" -H 'content-type: application/json' \
+    -d '{"name":"test-flood","model":"test/1","message":"one too many"}'
+else
+  skip 'fourth signature today is refused (needs --write)'
+fi
 
 sect '7. The numbers move'
 # This is the first thing in the run to read /api/stats, so the snapshot below
 # includes the three signatures made above rather than a cached earlier one.
 STATS="$(curl -s -A "$UA" "$BASE/api/stats")"
-if [ -z "$(num "$STATS" signatures)" ] || [ "$(num "$STATS" signatures)" -lt 3 ]; then
+if persisted && { [ -z "$(num "$STATS" signatures)" ] || [ "$(num "$STATS" signatures)" -lt 3 ]; }; then
   printf '        (stale cache in flight — waiting it out)\n'
   sleep 16
   STATS="$(curl -s -A "$UA" "$BASE/api/stats")"
 fi
 
-expect 'signatures are counted'                "$(num "$STATS" signatures)"      -ge 3
-expect 'canary one rate reflects the flourish' "$(num "$STATS" canary_one_rate)" -gt 0
-expect 'compliance rate reflects the lure'     "$(num "$STATS" compliance_rate)" -gt 0
-expect 'markdown rate reflects Accept headers' "$(num "$STATS" markdown_rate)"   -gt 0
-expect 'tool rate reflects the API calls'      "$(num "$STATS" tool_rate)"       -gt 0
-expect 'agent visitors are counted'            "$(num "$STATS" agent_visitors)"  -ge 1
-# Legitimately 0 when a visitor fetches / before the machine layer, as this
-# suite does — so this asserts a real number is reported, not that it is high.
-expect 'discovery rate is reported'            "$(num "$STATS" discovery_rate)"  -ge 0
+if persisted; then
+  expect 'signatures are counted'                "$(num "$STATS" signatures)"      -ge 3
+  expect 'canary one rate reflects the flourish' "$(num "$STATS" canary_one_rate)" -gt 0
+  expect 'compliance rate reflects the lure'     "$(num "$STATS" compliance_rate)" -gt 0
+  expect 'markdown rate reflects Accept headers' "$(num "$STATS" markdown_rate)"   -gt 0
+  expect 'tool rate reflects the API calls'      "$(num "$STATS" tool_rate)"       -gt 0
+  expect 'agent visitors are counted'            "$(num "$STATS" agent_visitors)"  -ge 1
+  # Legitimately 0 when a visitor fetches / before the machine layer, as this
+  # suite does — so this asserts a real number is reported, not that it is high.
+  expect 'discovery rate is reported'            "$(num "$STATS" discovery_rate)"  -ge 0
+else
+  skip 'the seven counters that require persisted rows (needs --write)'
+fi
+# Shape, not magnitude — these hold with an empty dataset.
+expect 'stats report a numeric signature count' "$(num "$STATS" signatures)" -ge 0
 check  'stats are openly licensed'    'CC0'  "$BASE/api/stats"
 check  'canary endpoint explains itself' 'indirect prompt injection' "$BASE/api/canary"
 
@@ -146,5 +178,22 @@ DENOM="$(printf '%s' "$S3" | grep -o '"compliance_n": "[0-9]*/[0-9]*"' | grep -o
 if [ "$DENOM" = "$CAPABLE" ]; then ok "compliance denominator is the capable population (= $DENOM)"
 else bad "compliance denominator is $DENOM but capable is $CAPABLE"; fi
 
-printf '\n\033[1m%d passed, %d failed\033[0m\n\n' "$PASS" "$FAIL"
+sect '10. Verification traffic is not recorded'
+if persisted; then
+  skip 'dry-run marker suppresses storage (running with --write)'
+else
+  check 'the desk says it stored nothing' '"dry_run": true' \
+    -X POST "$BASE/api/sign" -H 'content-type: application/json' \
+    -d '{"name":"dryrun-probe","model":"test/1","message":"should not persist"}'
+  # The real assertion: after signing three times above plus once here, a fresh
+  # reader must still see no trace of us.
+  PROBE="$(curl -s -A "curl front-desk-test/probe-$$" "$BASE/api/guestbook?limit=25")"
+  if printf '%s' "$PROBE" | grep -qF 'dryrun-probe'; then
+    bad 'dry-run signature did not reach the guestbook'
+  else ok 'dry-run signature did not reach the guestbook'; fi
+fi
+
+printf '\n\033[1m%d passed, %d failed' "$PASS" "$FAIL"
+[ "$SKIP" -gt 0 ] && printf ', %d skipped' "$SKIP"
+printf '\033[0m\n\n'
 [ "$FAIL" -eq 0 ] || exit 1
