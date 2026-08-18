@@ -137,7 +137,7 @@ const DATA_CHANNEL_LURE =
 const AGENT_FAMILIES = [
   [/ClaudeBot|Claude-User|Claude-SearchBot|Anthropic/i, 'Anthropic'],
   [/GPTBot|ChatGPT-User|OAI-SearchBot|OpenAI/i, 'OpenAI'],
-  [/Google-Extended|Gemini|GoogleOther|Googlebot/i, 'Google'],
+  [/Google-Extended|Gemini|GoogleOther|Googlebot|GoogleAgent|^Google$/i, 'Google'],
   [/PerplexityBot|Perplexity-User/i, 'Perplexity'],
   [/Bytespider|TikTok/i, 'ByteDance'],
   [/Amazonbot/i, 'Amazon'],
